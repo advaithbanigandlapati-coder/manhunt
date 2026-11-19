@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "setup": "npm --prefix app install && npm --prefix server install",
-    "build": "npm --prefix app exec -- vite build",
+    "build": "cd app && npx vite build",
     "dev:server": "cd server && npx wrangler dev --port 8787",
     "dev:app": "cd app && npx vite",
     "deploy": "npm run build && cd server && npx wrangler deploy",
