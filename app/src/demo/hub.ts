@@ -121,6 +121,7 @@ function createParty(hostId: string) {
   Object.assign(room.g.settings, {
     matchMinutes: 15, pingMinutes: 1.5, warnSeconds: 10, revealSeconds: 10, freezeSeconds: 20,
     campMinutes: 3, outsideGraceSeconds: 30, endgameMinutes: 4, endgameRevealEveryMinutes: 1,
+    mods: true, modStartPoints: 3, orbCount: 8,
   });
   void fitToStreets(O, 270).then((polygon) => {
     if (!room.g || room.g.area) return;
@@ -151,6 +152,7 @@ async function addBot(name: string, i: number) {
     else if (m.t === 'tick') bot.tick = m;
     else if (m.t === 'tagPrompt') setTimeout(() => toRoom(bot.sock, { t: 'tagReply', tagId: m.tag.id, accept: true }), 1800);
     else if (m.t === 'votePrompt') setTimeout(() => toRoom(bot.sock, { t: 'vote', tagId: m.tag.id, hit: true }), 1500);
+    else if (m.t === 'orb') setTimeout(() => toRoom(bot.sock, { t: 'roll', reroll: m.roll.tier === 'D' && m.rerollsLeft > 0 }), 1500);
     else if (m.t === 'allyPrompt') setTimeout(() => toRoom(bot.sock, { t: 'allyReply', fromId: m.fromId, accept: true }), 1500);
     else if ((m.t === 'chat' || (m.t === 'rx' && !m.on)) && m.from === room.userId && isTeammate(bot.id, room.userId)) replyToUser(bot, m.t === 'chat' ? m.text : null);
   });
@@ -274,6 +276,19 @@ setInterval(() => {
   transmit(b, 1.5 + Math.random() * 1.8, Math.random() < 0.7 ? lines[Math.floor(Math.random() * lines.length)] : undefined);
 }, 9000);
 
+// bots occasionally use powers
+setInterval(() => {
+  const g = room.g;
+  if (!g?.settings.mods || g.phase !== 'live') return;
+  for (const b of bots) {
+    const p = g.players.find((x) => x.id === b.id);
+    if (!p || p.status !== 'active' || p.mod.points < 1 || Math.random() > 0.08) continue;
+    const role = roleOf(b.id);
+    const pick = role === 'hunter' ? 'trace' : (['vanish', 'shield', 'zone'] as const)[Math.floor(Math.random() * 3)];
+    toRoom(b.sock, { t: 'use', ability: pick });
+  }
+}, 10_000);
+
 // ---------- demo controls ----------
 let walking: ReturnType<typeof setInterval> | undefined;
 function walkMeTo(target: LatLng, seconds = 6) {
@@ -316,6 +331,21 @@ export const demo = {
     walkMeTo(toLL(cx + a.radiusM + 60, cy), 5);
   },
   walkHome() { walkMeTo(room.g?.area?.center ?? O, 5); },
+  /** Drop an orb a few steps away from you. */
+  orbNearMe() {
+    const g = room.g;
+    if (!g || !g.settings.mods) return;
+    const me = lastFix() ?? O;
+    const [x, y] = toXY(me);
+    g.orbs.push({ id: 'demo' + Date.now(), ...toLL(x + 30, y + 10) });
+    room.broadcastState();
+  },
+  givePoints() {
+    const p = room.g?.players.find((x) => x.id === room.userId);
+    if (!p) return;
+    p.mod.points += 5;
+    room.broadcastState();
+  },
   /** Make a teammate key up right now. */
   teammateTalk() {
     const b = bots.find((x) => isTeammate(x.id, room.userId)) ?? bots[0];

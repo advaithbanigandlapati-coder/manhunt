@@ -11,10 +11,10 @@ export function Panel() {
 
   const steps: Record<string, string> = {
     home: 'Type a name and tap Host a game. Six bot players will join.',
-    lobby: 'Pick a game length, check the area, then tap Spin for teams.',
+    lobby: 'Mods are on for the demo. Open Choose powers to see them, then tap Spin for teams.',
     teams: 'Rename your team with the pencil, tap I\u2019m ready, then Start the hunt.',
     freeze: role === 'hunter' ? 'You’re frozen. The camera has to stay on and uncovered (here it shows a fake camera feed).' : 'Run! The hunters are frozen. Tap the map to move.',
-    live: role === 'hunter' ? 'Hunt. Walk up to a hider to open the combat cam. Tap the orange radio button to open the walkie, or hold it to talk.' : 'Hide. Tap the orange radio button to open the walkie (hold it to talk). Try Scan to find other teams\u2019 channels.',
+    live: role === 'hunter' ? 'Hunt. Walk up to a hider to open the combat cam. The lightning button opens your powers. Tap a gold orb on the map to walk to it.' : 'Hide. The lightning button opens powers like Vanish and Fake Location. Tap a gold orb on the map to walk over it and roll. The orange button is the radio.',
     ended: 'Scrub the replay, or tap Play again.',
   };
 
@@ -45,6 +45,8 @@ export function Panel() {
             ? <button disabled={phase !== 'live'} onClick={demo.walkToHider}>Walk me to the nearest hider</button>
             : <button disabled={phase !== 'live'} onClick={demo.chaseMe}>Send a hunter after me</button>}
           <button disabled={!live} onClick={demo.teammateTalk}>Have a teammate radio in</button>
+          <button disabled={!live} onClick={demo.orbNearMe}>Drop an orb next to me (then tap it)</button>
+          <button disabled={!live} onClick={demo.givePoints}>Give me 5 points</button>
           <button disabled={!live} onClick={demo.walkOut}>Walk me out of bounds</button>
           <button disabled={!live} onClick={demo.walkHome}>Walk me back to the middle</button>
           <button onClick={() => location.reload()}>Restart demo</button>

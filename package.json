@@ -9,6 +9,7 @@
     "deploy": "npm run build && cd server && npx wrangler deploy",
     "typecheck": "cd app && npx tsc -p . && cd ../server && npx tsc -p .",
     "test:server": "cd server && npx tsx test/sim.ts",
-    "test:e2e": "cd app && node test/e2e.mjs"
+    "test:e2e": "cd app && node test/e2e.mjs",
+    "test:mods": "cd server && npx tsx test/mods.ts"
   }
 }

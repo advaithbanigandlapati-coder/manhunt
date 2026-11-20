@@ -2,7 +2,10 @@ import { DurableObject } from 'cloudflare:workers';
 import {
   DEFAULT_SETTINGS, HUNTER_COLOR, TEAM_COLORS, proxLevel,
   type Area, type ClientMsg, type GameEvent, type HistoryFrame, type LatLng, type Marker, type Phase,
-  type PlayerStatus, type PublicState, type EndVote, RADIO_CHANNELS, type ServerMsg, type Settings, type TagClaim, type Team,
+  type PlayerStatus, type PublicState, type EndVote, RADIO_CHANNELS,
+  ABILITIES, ABILITY_MINUTES, ORB_TIERS, MAX_REROLLS, ORB_PICKUP_M, SAFE_ZONE_M, SAFE_ZONE_CHARGE_MS,
+  BOUNTY_MS, BOUNTY_EVERY_MS, BOUNTY_FLASH_MS, BOUNTY_MIN_POINTS,
+  type AbilityId, type ModState, type Orb, type Roll, type ServerMsg, type Settings, type TagClaim, type Team,
   type VisReason, type VisiblePlayer, type Winner,
 } from '../../shared/protocol';
 import { distM, distToEdgeM, pointInPolygon } from '../../shared/geo';
@@ -29,7 +32,11 @@ type PlayerRec = {
   ready: boolean;
   channel: number;
   lastSeen: number;
+  mod: ModRec;
 };
+
+/** A player's mod state: points, rerolls, active effects, safe zones. */
+type ModRec = Omit<ModState, 'decoy'> & { decoy: LatLng | null; bountyAt: number };
 
 type Game = {
   code: string;
@@ -60,6 +67,8 @@ type Game = {
   endVote: EndVote | null;
   talkers: Record<number, { talker: string; since: number }>;
   homes: Record<string, number>; // teamId -> home channel
+  orbs: Orb[];
+  lastOrbAt: number;
 };
 
 type Att = { pid: string };
@@ -72,7 +81,7 @@ const clampStr = (s: unknown, n: number) => String(s ?? '').replace(/\s+/g, ' ')
 const SETTING_RANGES: { [K in keyof Settings]?: [number, number] } = {
   matchMinutes: [1, 480], pingMinutes: [0.25, 60], warnSeconds: [3, 60], revealSeconds: [3, 60],
   freezeSeconds: [0, 900], freezeMaxSteps: [0, 50], freezeRadiusM: [5, 60], campMinutes: [0.25, 30],
-  campRadiusM: [10, 60], outsideGraceSeconds: [5, 600], darkSeconds: [10, 600], soloThreshold: [0, 10],
+  modStartPoints: [0, 10], orbCount: [0, 30], campRadiusM: [10, 60], outsideGraceSeconds: [5, 600], darkSeconds: [10, 600], soloThreshold: [0, 10],
   hunterTeams: [1, 5], endgameMinutes: [0.5, 90], endgameRevealEveryMinutes: [0.1, 15],
   endgameRevealSeconds: [1, 30], combatRangeM: [10, 80],
 };
@@ -100,7 +109,11 @@ export class Room extends DurableObject {
     super(ctx, env as never);
     ctx.blockConcurrencyWhile(async () => {
       this.g = (await ctx.storage.get<Game>('g')) ?? null;
-      if (this.g) { this.g.talkers ??= {}; this.g.homes ??= {}; this.g.endVote ??= null; }
+      if (this.g) {
+        this.g.talkers ??= {}; this.g.homes ??= {}; this.g.endVote ??= null; this.g.orbs ??= []; this.g.lastOrbAt ??= 0;
+        this.g.settings = { ...DEFAULT_SETTINGS, ...this.g.settings };
+        for (const p of this.g.players) p.mod ??= this.freshMod(0);
+      }
       this.hist = (await ctx.storage.get<HistoryFrame[]>('hist')) ?? [];
     });
   }
@@ -281,6 +294,10 @@ export class Room extends DurableObject {
         this.toChannel(p.channel, { t: 'chat', ch: p.channel, from: p.id, text, at: now });
         return;
       }
+      case 'use':
+        if (!this.onUse(p, m, now, err)) return;
+        break;
+      case 'roll': return this.onRoll(p, !!m.reroll, now);
       case 'history':
         return this.send(ws, { t: 'history', frames: this.hist, events: g.events });
       default:
@@ -411,6 +428,7 @@ export class Room extends DurableObject {
         g.revealUntil = now + s.revealSeconds * 1000;
         g.nextPingAt += s.pingMinutes * 60_000;
         this.event('info', 'Location ping. Everyone is visible.');
+        if (s.mods) this.assignBounty(now);
         stateDirty = true;
       }
     }
@@ -439,6 +457,9 @@ export class Room extends DurableObject {
       }
       if (!why) p.announced = {};
     }
+
+    // mods: orbs, safe zone charge, bounty expiry, unclaimed rolls
+    if (s.mods && this.modTick(now)) stateDirty = true;
 
     // end vote + stuck transmitters
     if (g.endVote) { this.checkEndVote(now); if (g.phase === 'ended') return; }
@@ -511,6 +532,7 @@ export class Room extends DurableObject {
 
     // camping anchor (hunters exempt while frozen)
     const frozenHunter = g.phase === 'freeze' && this.roleOf(p) === 'hunter';
+    if (s.mods && !frozenHunter) this.pickUpOrbs(p, here, acc, now);
     if (!frozenHunter && (!p.camp || distM(p.camp, here) > s.campRadiusM + slack)) p.camp = { lat, lng, since: now };
 
     // hunter freeze GPS backstop
@@ -545,6 +567,11 @@ export class Room extends DurableObject {
     if (g.tags.some((x) => x.targetId === t.id)) return err('Already waiting on that tag');
     if (!p.pos || !t.pos || distM(p.pos, t.pos) > g.settings.combatRangeM * 1.6 + Math.min(p.pos.acc + t.pos.acc, 40)) {
       return err('Too far away to count');
+    }
+    const safe = g.settings.mods ? this.protection(t, now) : null;
+    if (safe) {
+      this.sendTo(t.id, { t: 'event', e: { id: rid(), at: now, kind: 'mod', text: `${p.name} tried to tag you. ${safe === 'shield' ? 'Your shield blocked it.' : 'Your safe zone saved you.'}`, important: true } });
+      return err(safe === 'shield' ? `${t.name} has an immunity shield up` : `${t.name} is in a safe zone`);
     }
     const tag = { id: rid(), hunterId: p.id, targetId: t.id, at: now, stage: 'confirm' as const, deadline: now + TAG_TIMEOUT_MS };
     g.tags.push(tag);
@@ -635,7 +662,10 @@ export class Room extends DurableObject {
       winner: null, tags: [], allyReqs: [], events: [], lastHistAt: 0, endVote: null,
       initialHiderTeams: g.teams.filter((t) => t.role === 'hider').length,
     } satisfies Partial<Game>);
-    for (const p of g.players) Object.assign(p, this.freshLive(), { status: 'active' as const });
+    for (const p of g.players) Object.assign(p, this.freshLive(), { status: 'active' as const, mod: this.freshMod(s.modStartPoints) });
+    g.orbs = [];
+    g.lastOrbAt = 0;
+    if (s.mods) for (let i = 0; i < Math.min(3, s.orbCount); i++) { const o = this.spawnOrb(); if (o) g.orbs.push(o); }
     this.hist = [];
     this.event('start', s.freezeSeconds > 0 ? `Match on. Hunters are frozen for ${s.freezeSeconds >= 60 ? `${+(s.freezeSeconds / 60).toFixed(1)} min` : `${s.freezeSeconds}s`}. Run.` : 'Match on.', true);
     void this.ctx.storage.setAlarm(now + 1000);
@@ -646,6 +676,13 @@ export class Room extends DurableObject {
     const t = g.players.find((x) => x.id === targetId);
     if (!t || t.status !== 'active') return;
     this.event('caught', `${this.name(hunterId)} caught ${t.name}${suffix}`, true);
+    if (g.settings.mods) {
+      const h = g.players.find((x) => x.id === hunterId);
+      const bounty = (t.mod.until.bounty ?? 0) > now;
+      if (h) h.mod.points += bounty ? 3 : 1;
+      delete t.mod.until.bounty;
+      if (h) this.sendTo(h.id, { t: 'event', e: { id: rid(), at: now, kind: 'mod', text: bounty ? 'Bounty collected: +3 points' : '+1 point for the catch' } });
+    }
     if (g.settings.caughtJoinHunters) {
       const old = g.teams.find((x) => x.id === t.teamId);
       const hunt = g.teams.find((x) => x.role === 'hunter' && x.members.includes(hunterId)) ?? g.teams.find((x) => x.role === 'hunter');
@@ -702,7 +739,7 @@ export class Room extends DurableObject {
     Object.assign(g, {
       phase: 'lobby', teams: [], soloMode: false, spin: null, startedAt: null, freezeEndsAt: null, endsAt: null,
       nextPingAt: null, warnedFor: null, revealUntil: null, endgame: false, nextEndgameRevealAt: null,
-      winner: null, markers: [], tags: [], allyReqs: [], endVote: null, talkers: {},
+      winner: null, markers: [], tags: [], allyReqs: [], endVote: null, talkers: {}, orbs: [],
     } satisfies Partial<Game>);
     for (const p of g.players) Object.assign(p, this.freshLive(), { teamId: null, status: 'active' as const, allianceId: null, ready: false, channel: 1 });
     void this.ctx.storage.deleteAlarm();
@@ -718,6 +755,7 @@ export class Room extends DurableObject {
       else if (typeof DEFAULT_SETTINGS[key] === 'boolean') (s as Record<string, unknown>)[key] = !!v;
       else if (key === 'oddRule' && ['solo', 'hunters', 'trio'].includes(v as string)) s.oddRule = v as Settings['oddRule'];
       else if (key === 'preset' && ['quick', 'classic', 'long', 'custom'].includes(v as string)) s.preset = v as Settings['preset'];
+      else if (key === 'disabledAbilities' && Array.isArray(v)) s.disabledAbilities = [...new Set(v.filter((x) => typeof x === 'string' && x in ABILITIES))] as AbilityId[];
     }
   }
 
@@ -737,6 +775,7 @@ export class Room extends DurableObject {
     const exposures = new Map(g.players.map((p) => [p.id, this.exposure(p, now)]));
     const active = g.players.filter((p) => p.status === 'active' && p.pos);
     const range = g.settings.combatRangeM;
+    const mods = g.settings.mods;
 
     for (const ws of this.ctx.getWebSockets()) {
       const { pid } = ws.deserializeAttachment() as Att;
@@ -748,13 +787,22 @@ export class Room extends DurableObject {
       const targets: string[] = [];
       for (const o of active) {
         if (o.id === me.id) continue;
-        const pos = o.pos!;
-        const reason: VisReason | null =
+        let pos: { lat: number; lng: number; acc: number; at: number } = o.pos!;
+        let reason: VisReason | null =
           o.teamId && o.teamId === me.teamId ? 'team'
           : o.allianceId && o.allianceId === me.allianceId ? 'ally'
-          : revealing ? 'ping'
-          : exposures.get(o.id) ?? null;
+          : null;
+        if (!reason) {
+          reason = revealing ? 'ping' : exposures.get(o.id) ?? null;
+          if (mods) {
+            const u = o.mod.until;
+            if ((u.vanish ?? 0) > now) reason = (me.mod.until.trace ?? 0) > now ? 'trace' : null;
+            else if (!reason && myRole === 'hunter' && (u.bounty ?? 0) > now && (now - o.mod.bountyAt) % BOUNTY_EVERY_MS < BOUNTY_FLASH_MS) reason = 'bounty';
+            if (reason && reason !== 'trace' && (u.fake ?? 0) > now && o.mod.decoy) pos = { ...pos, ...o.mod.decoy };
+          }
+        }
         if (reason) vis.push({ id: o.id, lat: pos.lat, lng: pos.lng, acc: pos.acc, reason, at: pos.at });
+        pos = o.pos!;
         if (me.status === 'active' && me.pos && myRole && this.roleOf(o) && this.roleOf(o) !== myRole && now - pos.at < 30_000) {
           const d = distM(me.pos, pos);
           nearest = Math.min(nearest, d);
@@ -775,10 +823,209 @@ export class Room extends DurableObject {
       soloMode: false, spin: null, startedAt: null, freezeEndsAt: null, endsAt: null, nextPingAt: null,
       warnedFor: null, revealUntil: null, endgame: false, nextEndgameRevealAt: null, initialHiderTeams: 0,
       winner: null, markers: [], events: [], tags: [], allyReqs: [], lastHistAt: 0, lastSaveAt: 0, endVote: null, talkers: {}, homes: {},
+      orbs: [], lastOrbAt: 0,
     };
   }
   newPlayer(id: string, name: string, secretHash: string): PlayerRec {
-    return { id, name, secretHash, teamId: null, status: 'active', allianceId: null, ready: false, channel: 1, lastSeen: Date.now(), ...this.freshLive() };
+    return { id, name, secretHash, teamId: null, status: 'active', allianceId: null, ready: false, channel: 1, lastSeen: Date.now(), mod: this.freshMod(0), ...this.freshLive() };
+  }
+  freshMod(points: number): ModRec {
+    return { points, rerolls: MAX_REROLLS, freeZone: true, zones: [], decoy: null, pendingRoll: null, until: {}, bountyAt: 0 };
+  }
+
+  // ---------- mods ----------
+  rollOrb(now: number): Roll {
+    let r = Math.random();
+    for (const t of ORB_TIERS) { if ((r -= t.chance) <= 0) return { tier: t.tier, points: t.points, at: now }; }
+    return { tier: 'D', points: 1, at: now };
+  }
+
+  /** A random spot inside the play area, away from the edge and other orbs. */
+  spawnOrb(): Orb | null {
+    const g = this.g!;
+    const poly = g.area?.polygon;
+    if (!poly?.length) return null;
+    const lats = poly.map((q) => q.lat), lngs = poly.map((q) => q.lng);
+    const [a, b, c, d] = [Math.min(...lats), Math.max(...lats), Math.min(...lngs), Math.max(...lngs)];
+    for (let i = 0; i < 60; i++) {
+      const q = { lat: a + Math.random() * (b - a), lng: c + Math.random() * (d - c) };
+      if (!pointInPolygon(q, poly) || distToEdgeM(q, poly) < 12) continue;
+      if (g.orbs.some((o) => distM(o, q) < 40)) continue;
+      return { id: rid(), ...q };
+    }
+    return null;
+  }
+
+  pickUpOrbs(p: PlayerRec, here: LatLng, acc: number, now: number) {
+    const g = this.g!;
+    const reach = ORB_PICKUP_M + Math.min(acc, 15);
+    const orb = g.orbs.find((o) => distM(o, here) <= reach);
+    if (!orb) return;
+    g.orbs = g.orbs.filter((o) => o !== orb);
+    if (p.mod.pendingRoll) this.keepRoll(p, now);
+    const roll = this.rollOrb(now);
+    p.mod.pendingRoll = roll;
+    this.sendTo(p.id, { t: 'orb', roll, rerollsLeft: p.mod.rerolls, rerolled: false });
+    this.broadcastState();
+  }
+
+  onRoll(p: PlayerRec, reroll: boolean, now: number) {
+    const cur = p.mod.pendingRoll;
+    if (!cur) return;
+    if (reroll && p.mod.rerolls > 0) {
+      p.mod.rerolls--;
+      const roll = this.rollOrb(now);
+      p.mod.pendingRoll = roll;
+      return this.sendTo(p.id, { t: 'orb', roll, rerollsLeft: p.mod.rerolls, rerolled: true });
+    }
+    this.keepRoll(p, now);
+  }
+
+  keepRoll(p: PlayerRec, now: number) {
+    const r = p.mod.pendingRoll;
+    if (!r) return;
+    p.mod.points += r.points;
+    p.mod.pendingRoll = null;
+    if (r.tier === 'S') this.event('mod', `${p.name} pulled an S-tier orb`);
+    this.sendTo(p.id, { t: 'event', e: { id: rid(), at: now, kind: 'mod', text: `${r.tier}-tier orb: +${r.points} point${r.points === 1 ? '' : 's'}` } });
+    this.sendTo(p.id, { t: 'state', s: this.publicState(p.id) });
+  }
+
+  /** Why a hit on this player wouldn't count right now, if any. */
+  protection(t: PlayerRec, now: number): 'shield' | 'zone' | null {
+    const m = t.mod;
+    if ((m.until.shield ?? 0) > now) return 'shield';
+    if ((m.until.disabled ?? 0) <= now && t.pos && m.zones.some((z) => z.charge > 0 && distM(z, t.pos!) <= SAFE_ZONE_M)) return 'zone';
+    return null;
+  }
+
+  /** At each ping, the richest hider (2+ points) gets a bounty. */
+  assignBounty(now: number) {
+    const g = this.g!;
+    const pool = g.players.filter((p) => p.status === 'active' && this.roleOf(p) === 'hider' && p.mod.points >= BOUNTY_MIN_POINTS && !((p.mod.until.bounty ?? 0) > now));
+    if (!pool.length) return;
+    const top = Math.max(...pool.map((p) => p.mod.points));
+    const pick = shuffle(pool.filter((p) => p.mod.points === top))[0];
+    pick.mod.until.bounty = now + BOUNTY_MS;
+    pick.mod.bountyAt = now;
+    this.event('bounty', `Bounty on ${pick.name}. Hunters see them every 30 seconds for 5 minutes.`, true);
+  }
+
+  modTick(now: number): boolean {
+    const g = this.g!;
+    let dirty = false;
+    if (g.area && g.orbs.length < g.settings.orbCount && now - g.lastOrbAt > 15_000) {
+      const o = this.spawnOrb();
+      if (o) { g.orbs.push(o); dirty = true; }
+      g.lastOrbAt = now;
+    }
+    const pulse = Math.floor(now / 1000) % 5 === 0;
+    for (const p of g.players) {
+      const m = p.mod;
+      if (m.pendingRoll && now - m.pendingRoll.at > 20_000) this.keepRoll(p, now);
+      if (m.until.bounty && now > m.until.bounty) { delete m.until.bounty; dirty = true; }
+      if (p.status !== 'active' || !p.pos || !m.zones.length) continue;
+      const off = (m.until.disabled ?? 0) > now;
+      let inside = false;
+      for (const z of m.zones) if (!off && distM(z, p.pos) <= SAFE_ZONE_M) { z.charge -= 1000; inside = true; }
+      const before = m.zones.length;
+      m.zones = m.zones.filter((z) => z.charge > 0);
+      if (m.zones.length !== before) this.sendTo(p.id, { t: 'event', e: { id: rid(), at: now, kind: 'mod', text: 'One of your safe zones ran out', important: true } });
+      if (inside && (pulse || m.zones.length !== before)) this.sendTo(p.id, { t: 'state', s: this.publicState(p.id) });
+    }
+    return dirty;
+  }
+
+  onUse(p: PlayerRec, m: { ability: AbilityId; targetId?: string; lat?: number; lng?: number }, now: number, err: (s: string) => void): boolean {
+    const g = this.g!;
+    const s = g.settings;
+    const a = ABILITIES[m.ability];
+    const fail = (msg: string) => { err(msg); return false; };
+    if (!s.mods || !a) return fail('Mods are off for this game');
+    if (s.disabledAbilities.includes(m.ability)) return fail(`${a.name} is turned off for this game`);
+    if (g.phase !== 'live' && g.phase !== 'freeze') return fail('The match hasn\u2019t started');
+    const role = this.roleOf(p);
+    if (a.who === 'caught') { if (p.status !== 'caught') return fail('Revive is for caught players'); }
+    else {
+      if (p.status !== 'active') return fail('You\u2019re out of the game');
+      if (a.who === 'hider' && role !== 'hider') return fail(`${a.name} is for hiders`);
+    }
+    const mod = p.mod;
+    const cost = m.ability === 'zone' && mod.freeZone ? 0 : a.cost;
+    if (mod.points < cost) return fail(`You need ${cost} point${cost === 1 ? '' : 's'}`);
+    const until = now + ABILITY_MINUTES * 60_000;
+    const active = (k: keyof ModRec['until']) => (mod.until[k] ?? 0) > now;
+    const target = m.targetId ? g.players.find((x) => x.id === m.targetId) : undefined;
+    const tell = (id: string, text: string, important = false) => this.sendTo(id, { t: 'event', e: { id: rid(), at: now, kind: 'mod', text, important } });
+
+    switch (m.ability) {
+      case 'revive':
+        p.status = 'active';
+        Object.assign(p, { camp: null, outCount: 0, outSince: null, announced: {} });
+        mod.until.shield = now + 30_000;
+        this.event('mod', `${p.name} used Revive and is back in the game`, true);
+        break;
+      case 'reboot':
+        if (!target || target.status !== 'caught' || this.roleOf(target) !== 'hider') return fail('Pick a caught hider');
+        target.status = 'active';
+        Object.assign(target, { camp: null, outCount: 0, outSince: null, announced: {} });
+        target.mod.until.shield = now + 30_000;
+        this.event('mod', `${p.name} used a Reboot Card. ${target.name} is back in the game.`, true);
+        break;
+      case 'vanish':
+        if (active('vanish')) return fail('Vanish is already on');
+        mod.until.vanish = until;
+        break;
+      case 'fake': {
+        const lat = +(m.lat ?? NaN), lng = +(m.lng ?? NaN);
+        if (!isFinite(lat) || !isFinite(lng)) return fail('Pick a spot for the decoy');
+        if (g.area && !pointInPolygon({ lat, lng }, g.area.polygon)) return fail('The decoy has to be inside the play area');
+        mod.decoy = { lat, lng };
+        mod.until.fake = until;
+        break;
+      }
+      case 'shield':
+        if (active('shield')) return fail('Your shield is already up');
+        mod.until.shield = until;
+        break;
+      case 'trace':
+        if (active('trace')) return fail('Trace is already on');
+        mod.until.trace = until;
+        break;
+      case 'disable':
+        if (!target || target.id === p.id || target.status !== 'active') return fail('Pick an active player');
+        target.mod.until.disabled = until;
+        tell(target.id, 'Someone disabled your safe zones for 10 minutes', true);
+        break;
+      case 'steal':
+        if (!target || target.id === p.id || target.status !== 'active') return fail('Pick an active player');
+        if (target.mod.points < 1) return fail(`${target.name} has no points`);
+        target.mod.points -= 1;
+        mod.points += 1;
+        tell(target.id, 'Someone stole 1 of your points', true);
+        break;
+      case 'zone':
+        if (!p.pos) return fail('Waiting for your GPS');
+        if (mod.zones.length >= 3) return fail('You can have 3 safe zones at once');
+        if (mod.zones.some((z) => distM(z, p.pos!) < SAFE_ZONE_M * 1.5)) return fail('Too close to one of your other safe zones');
+        mod.zones.push({ id: rid(), lat: p.pos.lat, lng: p.pos.lng, charge: SAFE_ZONE_CHARGE_MS });
+        mod.freeZone = false;
+        break;
+      case 'clear':
+        if (!active('bounty')) return fail('There\u2019s no bounty on you');
+        delete mod.until.bounty;
+        this.event('bounty', `${p.name} cleared their bounty`);
+        break;
+    }
+    mod.points -= cost;
+    tell(p.id, `${a.name} used${a.minutes ? ` for ${a.minutes} minutes` : ''}`);
+    return true;
+  }
+  modState(p: PlayerRec): ModState {
+    const now = Date.now();
+    const m = p.mod;
+    const until = Object.fromEntries(Object.entries(m.until).filter(([, v]) => (v ?? 0) > now));
+    return { points: m.points, rerolls: m.rerolls, freeZone: m.freeZone, zones: m.zones, decoy: (m.until.fake ?? 0) > now ? m.decoy : null, pendingRoll: m.pendingRoll, until };
   }
   freshLive() {
     return { pos: null, lastLocAt: 0, camp: null, outCount: 0, outSince: null, freezeAnchor: null, freezeOutCount: 0, camBadSince: null, stillWarned: false, announced: {} };
@@ -808,7 +1055,7 @@ export class Room extends DurableObject {
     const me = g.players.find((p) => p.id === pid);
     return {
       code: g.code, phase: g.phase, hostId: g.hostId,
-      players: g.players.map((p) => ({ id: p.id, name: p.name, teamId: p.teamId, status: p.status, connected: this.isConnected(p.id), ready: p.ready })),
+      players: g.players.map((p) => ({ id: p.id, name: p.name, teamId: p.teamId, status: p.status, connected: this.isConnected(p.id), ready: p.ready, bounty: g.settings.mods && (p.mod.until.bounty ?? 0) > Date.now() })),
       teams: g.teams, settings: g.settings, area: g.area, soloMode: g.soloMode, spin: g.spin,
       startedAt: g.startedAt, freezeEndsAt: g.freezeEndsAt, endsAt: g.endsAt,
       nextPingAt: g.endgame ? null : g.nextPingAt, endgame: g.endgame, winner: g.winner,
@@ -816,6 +1063,8 @@ export class Room extends DurableObject {
       alliance: me?.allianceId ? g.players.filter((p) => p.allianceId === me.allianceId && p.id !== pid).map((p) => p.id) : [],
       markers: me?.teamId ? g.markers.filter((m) => m.teamId === me.teamId) : [],
       endVote: g.endVote,
+      orbs: g.settings.mods ? g.orbs : [],
+      mods: g.settings.mods && me ? this.modState(me) : null,
       radio: {
         ch: me?.channel ?? 1,
         home: me?.teamId ? g.homes[me.teamId] ?? null : null,

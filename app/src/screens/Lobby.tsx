@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { PRESETS, type PresetId, type PublicState, type Settings, type Team } from '../../../shared/protocol';
+import { ABILITIES, PRESETS, type AbilityId, type PresetId, type PublicState, type Settings, type Team } from '../../../shared/protocol';
+import { TIER_COLOR } from './Powers';
 import { leaveParty, send, toast } from '../store';
 import { GameMap } from '../map/GameMap';
 import { AreaEditor } from '../map/AreaEditor';
@@ -21,7 +22,46 @@ function ruleLines(s: Settings): [IconName, string][] {
     ['radio', 'Each team gets a secret radio channel. Anyone who finds it can listen in.'],
     ['users', `When one team is left, a ${fmtDuration(s.endgameMinutes)} endgame starts with surprise reveals.`],
     ['vote', 'Ending early needs a yes from every player.'],
+    ...(s.mods ? [['bolt', 'Mods are on. Grab orbs on the map for points and spend them on powers.'] as [IconName, string]] : []),
   ];
+}
+
+function ModsSheet({ s, host, onClose }: { s: Settings; host: boolean; onClose: () => void }) {
+  const set = (settings: Partial<Settings>) => send({ t: 'setSettings', settings });
+  const off = new Set(s.disabledAbilities);
+  const toggle = (id: AbilityId, on: boolean) => set({ disabledAbilities: on ? s.disabledAbilities.filter((x) => x !== id) : [...s.disabledAbilities, id] });
+  return (
+    <Sheet onClose={onClose} label="Mods">
+      <h2>Mods</h2>
+      {!host && <p className="hint">Only the host can change these.</p>}
+      <Switch label="Mods on" on={s.mods} disabled={!host} onChange={(v) => set({ mods: v })} />
+      <div className="rules-group">
+        <h3>Points</h3>
+        <p>Orbs show up on everyone’s map. Walk over one to roll D to S tier for 1 to 5 points. Everyone gets 3 rerolls per match. Hunters also earn 1 point per catch, 3 for a bounty.</p>
+        <SliderRow label="Starting points" value={s.modStartPoints} min={0} max={10} step={1} fmt={(v) => `${v}`} disabled={!host} onCommit={(v) => set({ modStartPoints: v })} />
+        <SliderRow label="Orbs on the map at once" value={s.orbCount} min={0} max={30} step={1} fmt={(v) => (v ? `${v}` : 'None')} disabled={!host} onCommit={(v) => set({ orbCount: v })} />
+      </div>
+      <div className="rules-group">
+        <h3>Powers</h3>
+        <p>Turn off any you don’t want in your games.</p>
+        {(Object.keys(ABILITIES) as AbilityId[]).map((id) => {
+          const a = ABILITIES[id];
+          return (
+            <div key={id} className="mod-toggle">
+              <span className="tier-chip" style={{ background: TIER_COLOR[a.tier] }}>{a.tier}</span>
+              <div className="grow"><b>{a.name}</b><small>{a.cost} pt{a.cost === 1 ? '' : 's'} · {a.desc}</small></div>
+              <button type="button" role="switch" aria-checked={!off.has(id)} aria-label={a.name} disabled={!host} className={`switch ${off.has(id) ? '' : 'on'}`} onClick={() => { sfx.toggle(); toggle(id, off.has(id)); }} />
+            </div>
+          );
+        })}
+      </div>
+      <div className="rules-group">
+        <h3>Safe zones and bounties</h3>
+        <p>Every hider can drop one free safe zone. Inside it, hits don’t count, for up to 5 minutes in total. At each ping, the hider holding the most points (2 or more) gets a bounty: hunters see them every 30 seconds for 5 minutes.</p>
+      </div>
+      <button className="btn block" onClick={onClose}>Done</button>
+    </Sheet>
+  );
 }
 
 function RulesSheet({ s, host, onClose }: { s: Settings; host: boolean; onClose: () => void }) {
@@ -159,6 +199,7 @@ export function Lobby({ s }: { s: PublicState }) {
   const host = s.you === s.hostId;
   const [editArea, setEditArea] = useState(false);
   const [rules, setRules] = useState(false);
+  const [modsOpen, setModsOpen] = useState(false);
   const ready = useReady();
   const me = s.players.find((p) => p.id === s.you);
   const myTeam = s.teams.find((t) => t.members.includes(s.you));
@@ -232,6 +273,16 @@ export function Lobby({ s }: { s: PublicState }) {
         </section>
 
         <section className="card">
+          <div className="card-head"><Icon name="bolt" size={22} style={{ color: s.settings.mods ? 'var(--orange)' : 'var(--faint)' }} /><h2>Mods</h2>
+            {host ? <button type="button" role="switch" aria-checked={s.settings.mods} aria-label="Mods" className={`switch ${s.settings.mods ? 'on' : ''}`} onClick={() => { sfx.toggle(); send({ t: 'setSettings', settings: { mods: !s.settings.mods } }); }} /> : <span className="aside">{s.settings.mods ? 'On' : 'Off'}</span>}
+          </div>
+          <p className="hint">{s.settings.mods
+            ? `Orbs, points and ${Object.keys(ABILITIES).length - s.settings.disabledAbilities.length} powers like Vanish, Fake Location and Revive. Everyone starts with ${s.settings.modStartPoints} point${s.settings.modStartPoints === 1 ? '' : 's'}.`
+            : 'Off: a classic hunt. Turn on for orbs, points, and powers like Vanish, Immunity Shield and Revive.'}</p>
+          {(s.settings.mods || !host) && <button className="btn" onClick={() => setModsOpen(true)}>{host ? 'Choose powers' : 'See powers'}</button>}
+        </section>
+
+        <section className="card">
           <div className="card-head"><span className={`step-num ${s.phase === 'teams' ? 'done' : ''}`}>{s.phase === 'teams' ? <Icon name="check" size={16} /> : 3}</span><h2>Players</h2><span className="aside">{s.players.length}{s.phase === 'teams' ? ` · ${readyCount} ready` : ''}</span></div>
           <ul className="players">
             {s.players.map((p) => (
@@ -272,6 +323,7 @@ export function Lobby({ s }: { s: PublicState }) {
       </div>
 
       {rules && <RulesSheet s={s.settings} host={host} onClose={() => setRules(false)} />}
+      {modsOpen && <ModsSheet s={s.settings} host={host} onClose={() => setModsOpen(false)} />}
     </div>
   );
 }

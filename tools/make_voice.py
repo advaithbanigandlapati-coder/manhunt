@@ -23,6 +23,11 @@ LINES = {
     'vote_passed': 'Vote passed. Ending the match.', 'alliance': 'Alliance formed.', 'dispute': 'Hit disputed. Cast your vote.',
     'min30': 'Thirty minutes remaining.', 'min10': 'Ten minutes remaining.', 'min5': 'Five minutes remaining.',
     'min1': 'One minute remaining.', 'ready': 'Systems ready.',
+    # mods
+    'orb': 'Orb collected.', 'jackpot': 'S tier. Jackpot.', 'bounty': 'Bounty placed.',
+    'bounty_you': 'Warning. There is a bounty on you.', 'revived': 'Player revived.', 'shield': 'Shield up.',
+    'blocked': 'Hit blocked.', 'vanish': 'You have vanished.', 'trace': 'Trace active.', 'stolen': 'Credits stolen.',
+    'zone': 'Safe zone deployed.', 'decoy': 'Decoy deployed.', 'zone_off': 'Your safe zones are offline.',
 }
 # a touch deeper, presence boost, light compression, small "control room" echo
 CHAIN = ("asetrate=24000*0.94,aresample=24000,atempo=1.0638,highpass=f=70,equalizer=f=140:t=q:w=1:g=3,"

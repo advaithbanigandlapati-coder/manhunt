@@ -373,3 +373,50 @@ input[type='range'] { width: 100%; height: 32px; accent-color: var(--orange); }
 
 .row > .btn { flex: 1; }
 .grow { flex: 1; }
+
+/* ---------- mods ---------- */
+.dock-btn .pts { position: absolute; bottom: 6px; right: 6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 99px; background: var(--orange); color: var(--orange-ink); font: 800 13px/20px var(--display); }
+.map-fab { position: fixed; right: 12px; bottom: calc(var(--safe-bot) + 108px); z-index: 9; width: 48px; height: 48px; border-radius: 16px; border: 1px solid var(--line); background: rgba(12, 18, 14, .92); color: var(--text); display: grid; place-items: center; }
+.effects { display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
+.effects span { background: rgba(12, 18, 14, .92); border: 1px solid #2a6a45; color: #b8f5cf; border-radius: 99px; padding: 5px 11px; font-size: 13.5px; font-weight: 600; }
+.effects span.bad { border-color: #8a3a2a; color: #ffb0a0; }
+.effects b { font: 700 14px var(--display); font-variant-numeric: tabular-nums; margin-left: 4px; }
+.orb { width: 30px; height: 30px; display: grid; place-items: center; }
+.orb i { width: 18px; height: 18px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff8d6, #ffcf33 45%, #c98a00); box-shadow: 0 0 0 4px rgba(255, 207, 51, .25), 0 0 18px 6px rgba(255, 207, 51, .45); animation: orb-bob 1.6s ease-in-out infinite; }
+@keyframes orb-bob { 50% { transform: translateY(-4px) scale(1.08); } }
+.decoy span { display: block; padding: 4px 9px; border-radius: 99px; border: 2px dashed var(--bone); color: var(--bone); background: rgba(12, 18, 14, .7); font: 700 13px var(--display); }
+.pin-trace .pin-body { border-style: dashed; border-color: #a78bfa; box-shadow: 0 0 0 4px rgba(167, 139, 250, .35); }
+.pin-bounty .pin-body { border-color: #ffcf33; box-shadow: 0 0 0 5px rgba(255, 207, 51, .4); animation: ping-pulse 1s ease-out infinite; }
+.powers-head { display: flex; align-items: flex-start; gap: 12px; }
+.powers-head > div:first-child { flex: 1; }
+.points { display: grid; grid-template-columns: auto auto; align-items: center; gap: 0 6px; color: #ffcf33; }
+.points b { font: 800 34px/1 var(--display); color: var(--text); }
+.points small { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; text-align: right; }
+.bounty-card { border: 1px solid #8a6420; background: #2c2008; border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 2px; }
+.bounty-card b { font: 700 18px var(--display); color: #ffcf33; }
+.abilities { display: flex; flex-direction: column; gap: 8px; }
+.ability { display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 10px 10px 12px; }
+.ability.dim { opacity: .55; }
+.ability .tier { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font: 800 20px var(--display); color: var(--bg); background: var(--t); }
+.ability-top { display: flex; align-items: center; gap: 6px; }
+.ability-top b { font: 700 17.5px var(--display); }
+.ability p { font-size: 13.5px; color: var(--muted); line-height: 1.35; margin-top: 2px; }
+.btn.use { min-height: 44px; min-width: 68px; padding: 0 12px; }
+.btn.use small { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.odds summary { color: var(--muted); font-weight: 600; cursor: pointer; padding: 6px 0; }
+.odds-row { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; margin: 4px 0 6px; }
+.roll-back { align-items: center; justify-content: center; }
+.roll-card { margin: 0 16px; width: 100%; max-width: 360px; background: var(--surface); border: 2px solid var(--t); border-radius: 24px; padding: 22px 18px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; animation: rise .2s; box-shadow: 0 0 60px color-mix(in srgb, var(--t) 35%, transparent); }
+.roll-card > small { font: 700 16px var(--display); color: var(--muted); }
+.roll-tier { width: 120px; height: 120px; border-radius: 28px; display: grid; place-items: center; font: 800 88px/1 var(--display); color: var(--bg); background: var(--t); }
+.roll-tier.spin { animation: reel .07s linear infinite; }
+.roll-tier.land { animation: land .4s cubic-bezier(.2, 1.6, .4, 1); }
+@keyframes reel { 50% { transform: translateY(3px); } }
+@keyframes land { from { transform: scale(.7); } }
+.roll-points { font: 800 28px var(--display); color: var(--t); min-height: 34px; }
+.roll-card .row { width: 100%; }
+.mod-toggle { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
+.mod-toggle b { display: block; font: 700 16.5px var(--display); }
+.mod-toggle small { display: block; color: var(--muted); font-size: 13px; line-height: 1.3; }
+.tier-chip { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font: 800 17px var(--display); color: var(--bg); flex: none; }
+.card-head .switch { margin-left: auto; }

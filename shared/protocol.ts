@@ -28,7 +28,10 @@ export type Settings = {
   endgameRevealEveryMinutes: number;
   endgameRevealSeconds: number;
   combatRangeM: number; // hunter camera turns on inside this range
-  mods: boolean; // abilities (phase 2)
+  mods: boolean; // abilities, orbs, safe zones, bounties
+  modStartPoints: number;
+  orbCount: number; // orbs on the map at once
+  disabledAbilities: AbilityId[];
   preset: PresetId;
 };
 
@@ -65,6 +68,9 @@ export const DEFAULT_SETTINGS: Settings = {
   endgameRevealSeconds: 3,
   combatRangeM: 30,
   mods: false,
+  modStartPoints: 1,
+  orbCount: 6,
+  disabledAbilities: [],
   preset: 'classic',
 };
 
@@ -79,6 +85,7 @@ export type PublicPlayer = {
   status: PlayerStatus;
   connected: boolean;
   ready: boolean;
+  bounty: boolean;
 };
 
 export type Team = { id: string; name: string; role: Role; members: string[]; color: string };
@@ -109,6 +116,8 @@ export type PublicState = {
   alliance: string[]; // player ids you are allied with (solo mode)
   markers: Marker[]; // your team's markers only
   radio: { ch: number; home: number | null; talker: string | null };
+  orbs: Orb[]; // everyone sees the orbs
+  mods: ModState | null; // yours, when mods are on
 };
 
 /** Ending early needs a yes from every player who is still around. */
@@ -119,7 +128,7 @@ export const RADIO_CHANNELS = 99;
 export const RADIO_RATE = 8000;
 export const RADIO_FRAME = 480;
 
-export type VisReason = 'team' | 'ally' | 'ping' | 'camping' | 'outside' | 'dark';
+export type VisReason = 'team' | 'ally' | 'ping' | 'camping' | 'outside' | 'dark' | 'trace' | 'bounty';
 
 export type VisiblePlayer = {
   id: string;
@@ -135,7 +144,7 @@ export type GameEvent = {
   at: number;
   kind:
     | 'join' | 'leave' | 'start' | 'freeze-over' | 'caught' | 'dq' | 'camping' | 'outside'
-    | 'dark' | 'endgame' | 'win' | 'alliance' | 'dispute' | 'warning' | 'info' | 'vote';
+    | 'dark' | 'endgame' | 'win' | 'alliance' | 'dispute' | 'warning' | 'info' | 'vote' | 'mod' | 'bounty';
   text: string;
   important?: boolean; // show as a full banner + voice
 };
@@ -169,7 +178,9 @@ export type ClientMsg =
   | { t: 'voteEnd'; yes: boolean }
   | { t: 'tune'; ch: number }
   | { t: 'ptt'; on: boolean }
-  | { t: 'say'; text: string };
+  | { t: 'say'; text: string }
+  | { t: 'use'; ability: AbilityId; targetId?: string; lat?: number; lng?: number }
+  | { t: 'roll'; reroll: boolean };
 
 export type ServerMsg =
   | { t: 'state'; s: PublicState }
@@ -192,7 +203,8 @@ export type ServerMsg =
   | { t: 'error'; msg: string }
   | { t: 'rx'; ch: number; from: string; on: boolean } // someone keyed up / released on your channel
   | { t: 'pttDenied'; talker: string }
-  | { t: 'chat'; ch: number; from: string; text: string; at: number };
+  | { t: 'chat'; ch: number; from: string; text: string; at: number }
+  | { t: 'orb'; roll: Roll; rerollsLeft: number; rerolled: boolean };
 
 export const TEAM_COLORS = ['#2ec4b6', '#4ea8de', '#a78bfa', '#f4d35e', '#f78fb3', '#9ad65c', '#5eead4', '#c4b5fd', '#fca5a5', '#93c5fd'];
 export const HUNTER_COLOR = '#ff6b1a';
@@ -203,3 +215,60 @@ export function proxLevel(d: number): number {
   for (let i = 0; i < PROX_BUCKETS.length; i++) if (d <= PROX_BUCKETS[i]) return 5 - i;
   return 0;
 }
+
+// ---------------- mods ----------------
+export type Tier = 'S' | 'A' | 'B' | 'C' | 'D';
+export type AbilityId = 'revive' | 'reboot' | 'vanish' | 'fake' | 'shield' | 'trace' | 'disable' | 'steal' | 'zone' | 'clear';
+export type Ability = {
+  name: string;
+  tier: Tier;
+  cost: number;
+  who: 'hider' | 'any' | 'caught'; // who can use it
+  target?: 'player' | 'caught' | 'point'; // what you pick when using it
+  minutes?: number; // how long it lasts
+  desc: string;
+};
+
+export const ABILITY_MINUTES = 10;
+export const ABILITIES: Record<AbilityId, Ability> = {
+  revive: { name: 'Revive', tier: 'S', cost: 3, who: 'caught', desc: 'You\u2019re caught. Spend 3 to rejoin as an active hider, with a 30-second shield.' },
+  reboot: { name: 'Reboot Card', tier: 'S', cost: 3, who: 'hider', target: 'caught', desc: 'Bring a caught hider back into the game.' },
+  vanish: { name: 'Vanish', tier: 'A', cost: 1, who: 'hider', minutes: 10, desc: 'Pings and exposures stop showing you for 10 minutes. Trace still sees you.' },
+  fake: { name: 'Fake Location', tier: 'A', cost: 1, who: 'hider', target: 'point', minutes: 10, desc: 'For 10 minutes, everyone else sees a decoy pin where you choose instead of you.' },
+  shield: { name: 'Immunity Shield', tier: 'A', cost: 1, who: 'hider', minutes: 10, desc: 'Hits on you don\u2019t count for 10 minutes.' },
+  trace: { name: 'Trace', tier: 'B', cost: 1, who: 'any', minutes: 10, desc: 'See anyone using Vanish, live, for 10 minutes.' },
+  disable: { name: 'Disable Safe Zone', tier: 'B', cost: 1, who: 'any', target: 'player', minutes: 10, desc: 'Turn off one player\u2019s safe zones for 10 minutes.' },
+  steal: { name: 'Steal Credits', tier: 'B', cost: 1, who: 'any', target: 'player', desc: 'Take 1 point from another active player.' },
+  zone: { name: 'Extra Safe Zone', tier: 'C', cost: 1, who: 'hider', desc: 'Drop another safe zone where you stand. Your first one is free.' },
+  clear: { name: 'Clear Bounty', tier: 'C', cost: 1, who: 'hider', desc: 'Remove the bounty on you right now.' },
+};
+
+/** Orb rolls: rarer tiers pay more. */
+export const ORB_TIERS: { tier: Tier; points: number; chance: number }[] = [
+  { tier: 'D', points: 1, chance: 0.4 },
+  { tier: 'C', points: 2, chance: 0.27 },
+  { tier: 'B', points: 3, chance: 0.18 },
+  { tier: 'A', points: 4, chance: 0.1 },
+  { tier: 'S', points: 5, chance: 0.05 },
+];
+export const MAX_REROLLS = 3;
+export const ORB_PICKUP_M = 12;
+export const SAFE_ZONE_M = 20;
+export const SAFE_ZONE_CHARGE_MS = 5 * 60_000; // each zone protects you for 5 minutes in total
+export const BOUNTY_MS = 5 * 60_000;
+export const BOUNTY_EVERY_MS = 30_000; // bountied hiders flash to hunters every 30 s
+export const BOUNTY_FLASH_MS = 5_000;
+export const BOUNTY_MIN_POINTS = 2;
+
+export type Orb = { id: string; lat: number; lng: number };
+export type Roll = { tier: Tier; points: number; at: number };
+export type SafeZone = { id: string; lat: number; lng: number; charge: number };
+export type ModState = {
+  points: number;
+  rerolls: number;
+  freeZone: boolean; // first safe zone not used yet
+  zones: SafeZone[];
+  decoy: LatLng | null;
+  pendingRoll: Roll | null;
+  until: Partial<Record<'vanish' | 'fake' | 'trace' | 'shield' | 'disabled' | 'bounty', number>>;
+};

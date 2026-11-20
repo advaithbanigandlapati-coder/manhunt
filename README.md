@@ -62,6 +62,30 @@ npm run test:e2e              # 4 headless Chrome phones through the real UI, sc
 | Win | All hiders caught = hunters win. Survive to the end, or the hunters break the freeze = hiders win. Everyone gets the result and the time. |
 | Replay | Positions are sampled every 5s. The results screen has a scrubber and a tappable timeline. |
 
+## Mods (toggle in the lobby)
+
+Off by default. The host turns them on from the **Mods** card and can switch any single power off.
+
+- **Orbs** spawn inside the play area (default 8 at once, everyone sees them). Walk within about 12 m to pick one up and roll a tier: D +1 (40%), C +2 (27%), B +3 (18%), A +4 (10%), S +5 (5%). Everyone gets 3 rerolls per match. A roll keeps itself after 20 s.
+- **Points:** everyone starts with the host's chosen amount (default 1). Hunters also get +1 per catch, or +3 if the hider had a bounty.
+- **Safe zones:** every hider can drop one free safe zone (20 m). Standing inside, hits don't count, for up to 5 minutes in total per zone. Max 3 at once.
+- **Bounties:** at each regular ping, the hider holding the most points (2 or more) gets a bounty. Hunters see them for 5 s every 30 s for 5 minutes.
+
+| Tier | Power | Cost | Who | Effect |
+|---|---|---|---|---|
+| S | Revive | 3 | caught player | Back in as an active hider, 30 s shield |
+| S | Reboot Card | 3 | hider | Bring a caught hider back |
+| A | Vanish | 1 | hider | Hidden from pings and exposures for 10 min (Trace still sees you) |
+| A | Fake Location | 1 | hider | Others see a decoy pin you place, for 10 min |
+| A | Immunity Shield | 1 | hider | Hits don't count for 10 min |
+| B | Trace | 1 | anyone | See vanished players live for 10 min |
+| B | Disable Safe Zone | 1 | anyone | Turn off a player's safe zones for 10 min |
+| B | Steal Credits | 1 | anyone | Take 1 point from an active player |
+| C | Extra Safe Zone | 1 | hider | Another safe zone where you stand (first one free) |
+| C | Clear Bounty | 1 | hider | Remove your bounty |
+
+Everything is enforced on the server, including visibility, so a modified app can't see vanished players or real positions behind decoys. `npm run test:mods` checks every power.
+
 ## Walkie-talkie
 
 - Every team gets a secret channel (2 to 99). Channel 1 is the lobby. Anyone can tune or **Scan** to find other teams' channels and listen in, voice and text.
@@ -90,10 +114,9 @@ Any player can start a vote from the menu. The match ends only when **every** pl
 ## Roadmap
 
 1. **Hunter cams streamed** to hiders during the freeze.
-2. **Radio extras for mods:** Bug Sweep (see who is listening) and Scramble.
-3. **Mods.** Ability points, map orb pickups with D–S tier rolls (3 rerolls), and the 11 abilities (Revive, Reboot Card, Vanish, Fake Location, Trace, Immunity Shield, Clear Bounty, Extra/Disable Safe Zone, Steal Credits). `settings.mods` is already in the protocol, and the server is the right place for the logic.
-4. **Replay export** to video (canvas → MediaRecorder → share sheet → Photos).
-5. **Web push** for events when a phone isn't in the app.
+2. **Radio powers for mods:** Bug Sweep (see who is listening) and Scramble.
+3. **Replay export** to video (canvas → MediaRecorder → share sheet → Photos).
+4. **Web push** for events when a phone isn't in the app.
 
 ## Code map
 

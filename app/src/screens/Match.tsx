@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Marker, PublicState } from '../../../shared/protocol';
+import type { AbilityId, Marker, PublicState } from '../../../shared/protocol';
 import { HUNTER_COLOR } from '../../../shared/protocol';
 import { leaveParty, pttDown, pttUp, send, serverNow, toast, useStore } from '../store';
 import { GameMap, flyTo, type MapPlayer } from '../map/GameMap';
@@ -9,6 +9,7 @@ import { fmtClock, keepAwake, vibrate, ft } from '../device/device';
 import { announce, setSoundPrefs, sfx, soundPrefs, type VoiceLine } from '../device/audio';
 import { CallScreen, CombatCam, FreezeCam, Radar } from './overlays';
 import { Walkie } from './Walkie';
+import { EffectsBar, PowersSheet, RollOverlay } from './Powers';
 import { Icon } from '../ui/icons';
 import { Sheet, Switch } from '../ui/kit';
 
@@ -30,7 +31,8 @@ export function Match({ s }: { s: PublicState }) {
   const now = useClock();
   const [me, setMe] = useState<Fix | null>(null);
   const [map, setMap] = useState<ml.Map | null>(null);
-  const [sheet, setSheet] = useState<null | 'team' | 'menu' | 'feed'>(null);
+  const [sheet, setSheet] = useState<null | 'team' | 'menu' | 'feed' | 'powers'>(null);
+  const [pickAbility, setPickAbility] = useState<AbilityId | null>(null);
   const [walkie, setWalkie] = useState(false);
   const [pocket, setPocket] = useState(false);
   const [markMode, setMarkMode] = useState(false);
@@ -135,6 +137,7 @@ export function Match({ s }: { s: PublicState }) {
   };
 
   const onMapTap = (p: { lat: number; lng: number }) => {
+    if (pickAbility) { send({ t: 'use', ability: pickAbility, lat: p.lat, lng: p.lng }); setPickAbility(null); return; }
     if (markMode) { setNewPin(p); setPinLabel(''); setMarkMode(false); return; }
     if (SIM) simMoveTo(p.lat, p.lng);
   };
@@ -143,6 +146,8 @@ export function Match({ s }: { s: PublicState }) {
     <div className={`screen match ${prox ? `prox-${prox}` : ''}`}>
       <GameMap
         area={s.area} fitKey={s.startedAt} players={players} pins={s.markers} night={night}
+        orbs={s.orbs} decoy={s.mods?.decoy ?? null}
+        zones={s.mods?.zones.map((z) => ({ ...z, off: (s.mods?.until.disabled ?? 0) > now }))}
         me={me ? { ...me, color: active ? color : '#66736a' } : null}
         onReady={setMap} onClick={onMapTap}
         onLongPress={(p) => { setNewPin(p); setPinLabel(''); }}
@@ -184,11 +189,19 @@ export function Match({ s }: { s: PublicState }) {
         {radio.rxFrom && !walkie && <div className="status radio"><i />{nameOf(radio.rxFrom)} on channel {s.radio.ch}</div>}
         {s.alliance.length > 0 && <div className="status ally">Allied with {s.alliance.map(nameOf).join(', ')}</div>}
         {markMode && <div className="status ally">Tap the map to drop a marker for your team.</div>}
+        {pickAbility && <div className="status ally">Tap the map where your decoy should appear. <button className="link" onClick={() => setPickAbility(null)}>Cancel</button></div>}
+        <EffectsBar s={s} />
         {SIM && <div className="status sim">Simulated GPS. Tap the map to move.</div>}
       </div>
 
       <nav className="dock" aria-label="Match controls">
-        <button className="dock-btn" aria-label="Center on me" onClick={() => { sfx.tap(); if (me) flyTo(map, me, 17); }}><Icon name="locate" /></button>
+        {s.mods ? (
+          <button className="dock-btn" aria-label={`Powers, ${s.mods.points} points`} onClick={() => { sfx.tap(); setSheet('powers'); }}>
+            <Icon name="bolt" /><span className="pts">{s.mods.points}</span>
+          </button>
+        ) : (
+          <button className="dock-btn" aria-label="Center on me" onClick={() => { sfx.tap(); if (me) flyTo(map, me, 17); }}><Icon name="locate" /></button>
+        )}
         <button className={`dock-btn ${markMode ? 'on' : ''}`} aria-label="Drop a marker" onClick={() => { sfx.tap(); setMarkMode(!markMode); }}><Icon name="flag" /></button>
         <button className={`radio-btn ${radio.talking ? 'talking' : ''} ${radio.rxFrom ? 'rx' : ''}`} aria-label="Radio. Tap to open, hold to talk" {...radioHandlers}>
           <Icon name="radio" size={26} /><small>CH {s.radio.ch}</small>
@@ -214,6 +227,8 @@ export function Match({ s }: { s: PublicState }) {
         </Sheet>
       )}
 
+      {s.mods && <button className="map-fab" aria-label="Center on me" onClick={() => { sfx.tap(); if (me) flyTo(map, me, 17); }}><Icon name="locate" /></button>}
+      {sheet === 'powers' && s.mods && <PowersSheet s={s} onClose={() => setSheet(null)} onPickPoint={(id) => { setSheet(null); setPickAbility(id); }} />}
       {sheet === 'team' && (
         <Sheet label="Teams" onClose={() => setSheet(null)}>
           <h2>Teams</h2>
@@ -227,7 +242,7 @@ export function Match({ s }: { s: PublicState }) {
                   <div key={id} className={`member ${p?.status}`}>
                     <i className={p?.connected ? 'dot on' : 'dot'} />
                     <span>{p?.name}{id === s.you && ' (you)'}</span>
-                    <em>{p?.status === 'active' ? '' : p?.status === 'dq' ? 'Out' : 'Caught'}</em>
+                    <em>{p?.bounty ? 'Bounty ' : ''}{p?.status === 'active' ? '' : p?.status === 'dq' ? 'Out' : 'Caught'}</em>
                     {canAlly && <button className="link" onClick={() => { send({ t: 'allyReq', targetId: id }); toast('Alliance request sent'); }}>Ally</button>}
                   </div>
                 );
@@ -272,6 +287,7 @@ export function Match({ s }: { s: PublicState }) {
       {showCombat && <CombatCam s={s} targets={targets} onClose={() => setCamDismissed(targetKey)} />}
       {walkie && <Walkie s={s} onClose={() => setWalkie(false)} />}
       {warnAt && warnAt > now - 1000 && <CallScreen pingAt={warnAt} />}
+      <RollOverlay />
       {pocket && (
         <div className="pocket" onDoubleClick={() => setPocket(false)} onClick={(e) => e.detail >= 2 && setPocket(false)}>
           <b>{pingMs === null ? '--:--' : fmtClock(pingMs)}</b>

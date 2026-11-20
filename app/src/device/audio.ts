@@ -12,6 +12,7 @@ export const VOICE_LINES = [
   'start', 'released', 'ping_incoming', 'ping', 'endgame', 'tagged', 'caught', 'dq', 'camping', 'outside', 'inside',
   'target', 'freeze_broken', 'hunters_win', 'hiders_win', 'match_over', 'vote_started', 'vote_passed', 'alliance',
   'dispute', 'min30', 'min10', 'min5', 'min1', 'ready',
+  'orb', 'jackpot', 'bounty', 'bounty_you', 'revived', 'shield', 'blocked', 'vanish', 'trace', 'stolen', 'zone', 'decoy', 'zone_off',
 ] as const;
 export type VoiceLine = (typeof VOICE_LINES)[number];
 
@@ -223,6 +224,25 @@ export const sfx = {
   },
   denied() { if (!on()) return; const t = now(); tone('square', 180, t, 0.12, 0.08); tone('square', 150, t + 0.14, 0.18, 0.08); },
   combat() { if (!on()) return; const t = now(); for (let i = 0; i < 3; i++) tone('square', 1400, t + i * 0.11, 0.06, 0.06); },
+
+  // ---------- mods ----------
+  /** Sparkly pickup when you walk over an orb. */
+  orb() { if (!on()) return; const t = now(); [1046.5, 1318.5, 1568, 2093].forEach((f, i) => bell(f, t + i * 0.06, 0.6, 0.1, 3, 1.5, 0.7)); },
+  /** One click of the tier reel. */
+  reel() { if (!on()) return; const t = now(); tone('square', 900 + Math.random() * 300, t, 0.03, 0.04); },
+  /** Tier reveal: bigger and brighter for rarer tiers. */
+  tier(tier: 'S' | 'A' | 'B' | 'C' | 'D') {
+    if (!on()) return;
+    const t = now();
+    const n = { D: 1, C: 2, B: 3, A: 4, S: 6 }[tier];
+    const base = { D: 392, C: 440, B: 523.3, A: 587.3, S: 659.3 }[tier];
+    for (let i = 0; i < n; i++) bell(base * [1, 1.25, 1.5, 2, 2.5, 3][i], t + i * 0.08, 1.2, 0.12, 2, 1.4, 0.7);
+    if (tier === 'S') noise(t, 1.2, 0.08, 'highpass', 6000, 0.5, { wet: 1 });
+  },
+  /** Ability fired. */
+  power() { if (!on()) return; const t = now(); noise(t, 0.5, 0.18, 'bandpass', 300, 2, { to: 4000, wet: 0.6 }); tone('sine', 220, t, 0.5, 0.15, { to: 880, wet: 0.5 }); },
+  /** A hit bounced off a shield or safe zone. */
+  blocked() { if (!on()) return; const t = now(); tone('triangle', 1600, t, 0.4, 0.12, { to: 1500, wet: 0.8 }); tone('triangle', 2400, t, 0.3, 0.08, { wet: 0.8 }); noise(t, 0.08, 0.2, 'highpass', 3000); },
 
   // ---------- walkie ----------
   keyUp() { if (!ctx) return; const t = now(); noise(t, 0.03, 0.25, 'bandpass', 2400, 1.5); tone('square', 120, t, 0.02, 0.05); },

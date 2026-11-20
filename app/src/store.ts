@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ClientMsg, GameEvent, HistoryFrame, PublicState, ServerMsg, TagClaim } from '../../shared/protocol';
+import { ABILITIES, type ClientMsg, type GameEvent, type HistoryFrame, type PublicState, type Roll, type ServerMsg, type TagClaim } from '../../shared/protocol';
 import { announce, sfx } from './device/audio';
 import { vibrate } from './device/device';
 import { closeMic, openMic, receiveFrame, rxState, startSending, stopSending } from './device/radio';
@@ -24,12 +24,14 @@ type Store = {
   toast: string | null;
   clockOffset: number; // serverNow - Date.now()
   radio: Radio;
+  roll: { roll: Roll; rerollsLeft: number; rerolled: boolean } | null;
 };
 
 let state: Store = {
   conn: 'idle', failReason: null, code: null, s: null, tick: null, events: [], banner: null, warnPingAt: null,
   tagPrompt: null, votePrompt: null, allyPrompts: [], history: null, toast: null, clockOffset: 0,
   radio: { talking: false, rxFrom: null, log: [], open: false },
+  roll: null,
 };
 const subs = new Set<() => void>();
 function set(p: Partial<Store>) { state = { ...state, ...p }; subs.forEach((f) => f()); }
@@ -115,7 +117,7 @@ export function leaveParty() {
   localStorage.removeItem('mh.party');
   ws?.close();
   ws = null;
-  set({ conn: 'idle', s: null, code: null, tick: null, events: [], history: null, banner: null, radio: { talking: false, rxFrom: null, log: [], open: false } });
+  set({ conn: 'idle', s: null, code: null, tick: null, events: [], history: null, banner: null, roll: null, radio: { talking: false, rxFrom: null, log: [], open: false } });
 }
 
 export function send(m: ClientMsg) {
@@ -174,6 +176,25 @@ function eventSound(e: GameEvent) {
     case 'vote':
       if (e.important) return announce('vote_started');
       return sfx.denied();
+    case 'bounty':
+      if (!e.important) return;
+      if (e.text.includes(`Bounty on ${myName()}.`)) { vibrate([300, 100, 300]); return announce('bounty_you'); }
+      return announce('bounty');
+    case 'mod': {
+      const t = e.text;
+      if (/back in the game/.test(t)) { sfx.power(); return announce('revived'); }
+      if (/shield blocked|safe zone saved/.test(t)) { sfx.blocked(); return announce('blocked', { chime: false }); }
+      if (/stole/.test(t)) { sfx.denied(); return announce('stolen'); }
+      if (/disabled your safe zones/.test(t)) { sfx.denied(); return announce('zone_off'); }
+      if (/ran out/.test(t)) return sfx.denied();
+      const used = (Object.keys(ABILITIES) as (keyof typeof ABILITIES)[]).find((k) => t.startsWith(`${ABILITIES[k].name} used`));
+      if (used) {
+        sfx.power();
+        const line = ({ vanish: 'vanish', shield: 'shield', trace: 'trace', zone: 'zone', fake: 'decoy' } as const)[used as 'vanish'];
+        if (line) setTimeout(() => announce(line, { chime: false }), 500);
+      }
+      return;
+    }
     case 'win':
       setTimeout(() => {
         const s = state.s;
@@ -241,11 +262,15 @@ function handle(m: ServerMsg) {
       return toast(`Channel busy. ${state.s?.players.find((p) => p.id === m.talker)?.name ?? 'Someone'} is talking.`);
     case 'allyPrompt': return set({ allyPrompts: [...new Set([...state.allyPrompts, m.fromId])] });
     case 'history': return set({ history: { frames: m.frames, events: m.events } });
+    case 'orb':
+      if (!m.rerolled) { sfx.orb(); vibrate([40, 40, 40]); announce('orb', { chime: false }); }
+      return set({ roll: { roll: m.roll, rerollsLeft: m.rerollsLeft, rerolled: m.rerolled } });
     case 'error': return toast(m.msg);
   }
 }
 
 export const dismiss = {
+  roll: () => set({ roll: null }),
   warn: () => set({ warnPingAt: null }),
   tag: () => set({ tagPrompt: null }),
   vote: () => set({ votePrompt: null }),
